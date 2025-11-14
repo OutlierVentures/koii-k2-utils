@@ -29,8 +29,7 @@ EOF
 }
 
 # Default values
-sort_by_credits=false
-sort_by_skiprate=false
+sort_order=()
 debug=false
 
 # Parse arguments using getopts
@@ -40,8 +39,8 @@ while getopts ":s:dh" opt; do
             IFS=',' read -ra SORT_OPTS <<< "$OPTARG"
             for opt in "${SORT_OPTS[@]}"; do
                 case $opt in
-                    credits) sort_by_credits=true ;;
-                    skiprate) sort_by_skiprate=true ;;
+                    credits) sort_order+=("credits") ;;
+                    skiprate) sort_order+=("skiprate") ;;
                     *)
                         echo "Invalid sort option: $opt" 1>&2
                         print_help
@@ -118,19 +117,112 @@ process_validator_line() {
     echo "$line"
 }
 
-# Get sort command based on options
-get_sort_args() {
-    local args=()
-    args+=("-k1,1")  # Base sort is always included
+# Extract numeric value from skip rate column for sorting
+extract_skiprate() {
+    local line="$1"
+    # Extract skip rate using awk - find the 2nd percentage field
+    # First percentage is commission, second is skip rate
+    local skiprate=$(echo "$line" | awk '{
+        count = 0
+        for(i=1;i<=NF;i++) {
+            if($i ~ /%$/) {
+                count++
+                if(count == 2) {
+                    print $i
+                    exit
+                }
+            }
+        }
+    }')
     
-    if [ "$sort_by_skiprate" = true ]; then
-        args+=("-k11,11n")
+    if [[ -z "$skiprate" ]]; then
+        # Check for "-" in skip rate position - treat as 0% skip rate
+        if echo "$line" | awk '{for(i=1;i<=NF;i++) if($i == "-" && i > 7) {print $i; exit}}' | grep -q "-"; then
+            echo "0.00"
+        else
+            echo "0.00"
+        fi
+    else
+        # Remove % sign and convert to number, ensure it's a valid float
+        local num=$(echo "$skiprate" | sed 's/%//' | awk '{printf "%.2f", $1+0}')
+        echo "${num:-0.00}"
     fi
-    if [ "$sort_by_credits" = true ]; then
-        args+=("-k12,12nr")
-    fi
+}
+
+# Extract numeric value from credits column for sorting
+extract_credits() {
+    local line="$1"
+    # Credits is the integer number that appears after skip rate and before version
+    # Version is in format X.Y.Z, so credits is the number just before that pattern
+    local credits=$(echo "$line" | awk '{
+        for(i=1;i<=NF;i++) {
+            # Check if current field matches version pattern X.Y.Z
+            if($i ~ /^[0-9]+\.[0-9]+\.[0-9]+$/) {
+                # Previous field should be credits
+                if(i > 1) print $(i-1)
+                exit
+            }
+        }
+    }')
     
-    printf "%s " "${args[@]}"
+    # Convert to number, handle empty as 0, ensure it's a valid integer
+    local num=$(echo "${credits:-0}" | awk '{printf "%d", $1+0}')
+    echo "${num:-0}"
+}
+
+# Custom sort function that handles skip rate and credits properly
+custom_sort() {
+    local lines=("$@")
+    local i
+    local temp_file=$(mktemp)
+    # Use a control character as delimiter (very unlikely to appear in validator output)
+    local DELIM=$'\x01'
+    
+    # Build sort keys and write to temp file with format: sort_key<DELIM>index<DELIM>line
+    for i in "${!lines[@]}"; do
+        local line="${lines[$i]}"
+        local sort_key=""
+        
+        # Check if this is a validator line
+        if [[ $line =~ [1-9A-HJ-NP-Za-km-z]{32,44} ]]; then
+            # Build sort key based on sort_order
+            for criterion in "${sort_order[@]}"; do
+                case $criterion in
+                    skiprate)
+                        local skiprate_val=$(extract_skiprate "$line")
+                        # Ensure skiprate_val is numeric, default to 0
+                        skiprate_val=$(echo "$skiprate_val" | awk '{printf "%.2f", $1+0}')
+                        # Format with leading zeros for proper numeric sorting
+                        local skiprate_formatted=$(printf "%010.2f" "$skiprate_val" 2>/dev/null || echo "000000.00")
+                        sort_key="${sort_key}${skiprate_formatted}|"
+                        ;;
+                    credits)
+                        local credits_val=$(extract_credits "$line")
+                        # Ensure credits_val is numeric, default to 0
+                        credits_val=$(echo "$credits_val" | awk '{printf "%d", $1+0}')
+                        # Invert for descending sort (subtract from large number)
+                        local inverted_credits=$((999999999 - credits_val))
+                        local credits_formatted=$(printf "%09d" "$inverted_credits" 2>/dev/null || echo "999999999")
+                        sort_key="${sort_key}${credits_formatted}|"
+                        ;;
+                esac
+            done
+            # Add identity as final tiebreaker
+            local identity=$(echo "$line" | awk '{print $1}')
+            sort_key="${sort_key}${identity}"
+        else
+            # Non-validator line - use empty sort key so it appears first
+            sort_key=""
+        fi
+        
+        # Write to temp file: sort_key<DELIM>index<DELIM>line
+        printf "%s%s%d%s%s\n" "$sort_key" "$DELIM" "$i" "$DELIM" "$line" >> "$temp_file"
+    done
+    
+    # Sort by sort_key and output lines (extract everything after the second delimiter)
+    sort -t"$DELIM" -k1,1 "$temp_file" | awk -F'\x01' '{print $3}'
+    
+    rm -f "$temp_file"
 }
 
 # Process output and store in array for easier sorting
@@ -163,9 +255,8 @@ for line in "${output_lines[@]}"; do
 done
 
 # Sort if requested
-if [ "$sort_by_skiprate" = true ] || [ "$sort_by_credits" = true ]; then
-    read -ra sort_args <<< "$(get_sort_args)"
-    IFS=$'\n' sorted_lines=($(printf "%s\n" "${processed_lines[@]}" | sort "${sort_args[@]}"))
+if [ ${#sort_order[@]} -gt 0 ]; then
+    IFS=$'\n' sorted_lines=($(custom_sort "${processed_lines[@]}"))
     processed_lines=("${sorted_lines[@]}")
 fi
 
