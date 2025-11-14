@@ -1,1 +1,5 @@
 .env
+.env.test
+
+# Test artifacts
+raw_validators_output.txt

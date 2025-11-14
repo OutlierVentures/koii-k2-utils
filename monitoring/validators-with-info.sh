@@ -264,4 +264,4 @@ fi
 echo "$header"
 printf "%s\n" "${processed_lines[@]}"
 echo ""  # Add empty line before footer
-echo -n "$footer"
+echo "$footer"

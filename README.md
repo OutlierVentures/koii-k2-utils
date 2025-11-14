@@ -20,7 +20,11 @@ An enhanced validator monitoring script that combines information from `koii val
 
 Options:
     -h          Show help message
-    -s SORT     Sort validators by specified criteria (skiprate,credits)
+    -s SORT     Sort validators by specified criteria. Multiple criteria can be
+                comma-separated. Available options:
+                  skiprate: Sort by skip rate (ascending)
+                  credits:  Sort by credits (descending)
+                Example: -s skiprate,credits
     -d          Debug mode: save raw validator output to file
 ```
 
@@ -93,6 +97,24 @@ Add a line to run weekly (e.g., every Sunday at 2 AM):
 - For log rotation:
   - Root or sudo access (required for log rotation script)
   - Systemd service management (for restarting the validator service)
+
+## Testing
+
+This project uses [BATS](https://github.com/bats-core/bats-core) for testing. To run the tests, you'll need:
+
+1. **BATS** - Install following the [official installation instructions](https://bats-core.readthedocs.io/en/stable/installation.html)
+
+2. **bats-support and bats-assert** - These helper libraries must be installed and available. The test runner will automatically detect them if installed via npm or system-wide.
+
+To run tests:
+```bash
+./run-tests.sh                                    # Run all tests (unit tests only)
+./run-tests.sh tests/log-rotate.bats              # Run specific test file
+./run-tests.sh tests/validators-with-info.bats    # Run unit tests only
+./run-tests.sh tests/validators-with-info-integration.bats  # Run integration tests (requires koii CLI and network)
+```
+
+**Note:** Integration tests require the `koii` CLI tool and network connectivity. They will be skipped automatically if `koii` is not available. To skip integration tests, simply don't run the integration test file.
 
 ## License
 
